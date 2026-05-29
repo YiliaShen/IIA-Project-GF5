@@ -46,13 +46,12 @@ def skin_smpl_mesh(
     rest_vertices = np.asarray(model_data.rest_vertices, dtype=np.float32)
     rest_joints = np.asarray(model_data.rest_joints, dtype=np.float32)
 
-    if use_blended_weights == True:
+    if use_blended_weights:
         weights = model_data.skinning_weights
     else:
         weights = model_data.one_hot_skinning_weights
 
     # Initialize the result matrix
-    num_vertices = rest_vertices.shape[0]
     smpl_vertices = np.zeros_like(rest_vertices)
     
     # The Skinning Transform
@@ -67,7 +66,7 @@ def skin_smpl_mesh(
     for i in range(num_joints):
         # transform vertex to local coordinate
         offset = rest_vertices - rest_joints[i:i+1, :]
-
+        
         R = world_rotations[i] # rotation matrix (3,3)
         t = world_positions[i] # translation vector (3,)
         
