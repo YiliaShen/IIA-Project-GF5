@@ -920,6 +920,187 @@ def rigid_asset_frame_mesh(asset: Any, world_rotations: Any, world_positions: An
     colors = rgba_vertex_colors(np.concatenate(color_groups, axis=0), int(vertices.shape[0]))
     return vertices, faces, colors
 
+def safe_scene_folder_name(scene: dict[str, Any], fallback: str = "scene") -> str:
+    """Return a filesystem-safe folder name for OBJ sequence export."""
+    import re
+
+    name = str(scene.get("name", "") or scene.get("title", "") or fallback).strip()
+    if not name:
+        name = fallback
+
+    name = re.sub(r"[^a-zA-Z0-9_\- ]+", "_", name)
+    name = re.sub(r"\s+", "_", name)
+    return name[:80] or fallback
+
+
+def export_scene_obj_frame(path: Path, meshes: list[tuple[Any, Any, Any]]) -> None:
+    """
+    Export one complete posed scene frame as a single OBJ.
+
+    meshes is the render_meshes list:
+        [(vertices, faces, vertex_colors), ...]
+
+    vertices are already posed/skinned/world-space for this frame.
+    """
+    import numpy as np
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    vertex_offset = 0
+    face_groups: list[Any] = []
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("# GF5 exported posed scene frame\n")
+        f.write("# Vertex format: v x y z r g b\n")
+
+        for vertices, faces, vertex_colors in meshes:
+            vertices = np.asarray(vertices, dtype=np.float32)
+            faces = np.asarray(faces, dtype=np.int64)
+
+            if vertices.size == 0 or faces.size == 0:
+                continue
+
+            if vertex_colors is None:
+                colors = np.tile(
+                    np.asarray([[0.8, 0.8, 0.8]], dtype=np.float32),
+                    (vertices.shape[0], 1),
+                )
+            else:
+                colors = np.asarray(vertex_colors)
+
+                # Convert RGBA/RGB 0-255 colours to OBJ-style 0-1 RGB.
+                if colors.size == 0:
+                    colors = np.tile(
+                        np.asarray([[0.8, 0.8, 0.8]], dtype=np.float32),
+                        (vertices.shape[0], 1),
+                    )
+                else:
+                    colors = colors[:, :3] if colors.ndim == 2 else np.resize(colors, (vertices.shape[0], 3))
+                    colors = colors.astype(np.float32)
+
+                    if float(np.nanmax(colors)) > 1.0:
+                        colors = colors / 255.0
+
+                    if colors.shape[0] != vertices.shape[0]:
+                        colors = np.resize(colors, (vertices.shape[0], 3))
+
+            for v, c in zip(vertices, colors):
+                f.write(
+                    f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f} "
+                    f"{c[0]:.6f} {c[1]:.6f} {c[2]:.6f}\n"
+                )
+
+            # Keep faces until after all vertices are written.
+            face_groups.append(faces[:, :3] + vertex_offset + 1)
+            vertex_offset += int(vertices.shape[0])
+
+        for faces in face_groups:
+            for face in faces:
+                f.write(f"f {int(face[0])} {int(face[1])} {int(face[2])}\n")
+
+def export_scene_ply_frame(path: Path, meshes: list[tuple[Any, Any, Any]]) -> None:
+    """
+    Export one complete posed scene frame as a PLY file with vertex colours.
+
+    PLY is better than OBJ for Blender because Blender can read RGB vertex colours.
+    meshes = [(vertices, faces, vertex_colors), ...]
+    """
+    import numpy as np
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    vertex_groups = []
+    color_groups = []
+    face_groups = []
+
+    vertex_offset = 0
+
+    for vertices, faces, vertex_colors in meshes:
+        vertices = np.asarray(vertices, dtype=np.float32)
+        faces = np.asarray(faces, dtype=np.int64)
+
+        if vertices.size == 0 or faces.size == 0:
+            continue
+
+        # ---------- Colour handling ----------
+        if vertex_colors is None:
+            colors = np.tile(
+                np.asarray([[200, 200, 200]], dtype=np.uint8),
+                (vertices.shape[0], 1),
+            )
+        else:
+            colors = np.asarray(vertex_colors)
+
+            if colors.ndim != 2:
+                colors = np.resize(colors, (vertices.shape[0], 3))
+
+            colors = colors[:, :3]
+
+            # If colours are 0-1 floats, convert to 0-255.
+            if colors.dtype.kind == "f" and colors.size and float(np.nanmax(colors)) <= 1.0:
+                colors = colors * 255.0
+
+            colors = np.clip(colors, 0, 255).astype(np.uint8)
+
+            if colors.shape[0] != vertices.shape[0]:
+                colors = np.resize(colors, (vertices.shape[0], 3)).astype(np.uint8)
+
+        # ---------- Axis fix for Blender ----------
+        # Use this if the exported model was lying down in Blender/3D Viewer.
+        # This converts old (x, y, z) to new (x, -z, y).
+        fixed_vertices = vertices.copy()
+
+        x = vertices[:, 0].copy()
+        y = vertices[:, 1].copy()
+        z = vertices[:, 2].copy()
+
+        fixed_vertices[:, 0] = x
+        fixed_vertices[:, 1] = -z
+        fixed_vertices[:, 2] = y
+
+        # If this rotates the wrong way, replace the three lines above with:
+        # fixed_vertices[:, 0] = x
+        # fixed_vertices[:, 1] = z
+        # fixed_vertices[:, 2] = -y
+
+        vertex_groups.append(fixed_vertices)
+        color_groups.append(colors)
+        face_groups.append(faces[:, :3] + vertex_offset)
+
+        vertex_offset += int(vertices.shape[0])
+
+    if not vertex_groups:
+        return
+
+    all_vertices = np.vstack(vertex_groups).astype(np.float32)
+    all_colors = np.vstack(color_groups).astype(np.uint8)
+    all_faces = np.vstack(face_groups).astype(np.int64)
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("ply\n")
+        f.write("format ascii 1.0\n")
+        f.write("comment GF5 exported posed scene frame with vertex colours\n")
+
+        f.write(f"element vertex {all_vertices.shape[0]}\n")
+        f.write("property float x\n")
+        f.write("property float y\n")
+        f.write("property float z\n")
+        f.write("property uchar red\n")
+        f.write("property uchar green\n")
+        f.write("property uchar blue\n")
+
+        f.write(f"element face {all_faces.shape[0]}\n")
+        f.write("property list uchar int vertex_indices\n")
+        f.write("end_header\n")
+
+        for v, c in zip(all_vertices, all_colors):
+            f.write(
+                f"{v[0]:.6f} {v[1]:.6f} {v[2]:.6f} "
+                f"{int(c[0])} {int(c[1])} {int(c[2])}\n"
+            )
+
+        for face in all_faces:
+            f.write(f"3 {int(face[0])} {int(face[1])} {int(face[2])}\n")
 
 class OffscreenAvatarRenderer:
     def __init__(self, width: int, height: int) -> None:
@@ -1093,6 +1274,18 @@ def export_avatar_scene_video(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"final_avatar_scene_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    scene_folder_name = f"{safe_scene_folder_name(scene)}_{timestamp}"
+
+    scene_obj_root = project_root / "exports" / "scene_obj"
+    scene_obj_dir = scene_obj_root / scene_folder_name
+    scene_obj_dir.mkdir(parents=True, exist_ok=True)
+
+    scene_ply_root = project_root / "exports" / "scene_ply"
+    scene_ply_dir = scene_ply_root / scene_folder_name
+    scene_ply_dir.mkdir(parents=True, exist_ok=True)
+
     avatar_renderer = OffscreenAvatarRenderer(width, height)
 
     def frames() -> Any:
@@ -1137,6 +1330,16 @@ def export_avatar_scene_video(
                 )
 
             if render_meshes:
+                export_scene_obj_frame(
+                    scene_obj_dir / f"{frame_index + 1}.obj",
+                    render_meshes,
+                )
+
+                export_scene_ply_frame(
+                    scene_ply_dir / f"{frame_index + 1}.ply",
+                    render_meshes,
+                )
+
                 overlay = avatar_renderer.render(scene, scene_time, render_meshes)
                 image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
             yield image
