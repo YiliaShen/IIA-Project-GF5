@@ -633,9 +633,9 @@ def normalize_scene(
 
 def normalize_background(raw: Any) -> dict[str, Any]:
     raw = raw if isinstance(raw, dict) else {}
-    color = str(raw.get("color", "#f4f1ea"))
+    color = str(raw.get("color", "#0A0700"))
     if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
-        color = "#f4f1ea"
+        color = "#060400"
     return {
         "color": color,
         "image_path": str(raw.get("image_path", "")),
