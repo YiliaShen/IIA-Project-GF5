@@ -932,72 +932,6 @@ def safe_scene_folder_name(scene: dict[str, Any], fallback: str = "scene") -> st
     name = re.sub(r"\s+", "_", name)
     return name[:80] or fallback
 
-
-def export_scene_obj_frame(path: Path, meshes: list[tuple[Any, Any, Any]]) -> None:
-    """
-    Export one complete posed scene frame as a single OBJ.
-
-    meshes is the render_meshes list:
-        [(vertices, faces, vertex_colors), ...]
-
-    vertices are already posed/skinned/world-space for this frame.
-    """
-    import numpy as np
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    vertex_offset = 0
-    face_groups: list[Any] = []
-
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("# GF5 exported posed scene frame\n")
-        f.write("# Vertex format: v x y z r g b\n")
-
-        for vertices, faces, vertex_colors in meshes:
-            vertices = np.asarray(vertices, dtype=np.float32)
-            faces = np.asarray(faces, dtype=np.int64)
-
-            if vertices.size == 0 or faces.size == 0:
-                continue
-
-            if vertex_colors is None:
-                colors = np.tile(
-                    np.asarray([[0.8, 0.8, 0.8]], dtype=np.float32),
-                    (vertices.shape[0], 1),
-                )
-            else:
-                colors = np.asarray(vertex_colors)
-
-                # Convert RGBA/RGB 0-255 colours to OBJ-style 0-1 RGB.
-                if colors.size == 0:
-                    colors = np.tile(
-                        np.asarray([[0.8, 0.8, 0.8]], dtype=np.float32),
-                        (vertices.shape[0], 1),
-                    )
-                else:
-                    colors = colors[:, :3] if colors.ndim == 2 else np.resize(colors, (vertices.shape[0], 3))
-                    colors = colors.astype(np.float32)
-
-                    if float(np.nanmax(colors)) > 1.0:
-                        colors = colors / 255.0
-
-                    if colors.shape[0] != vertices.shape[0]:
-                        colors = np.resize(colors, (vertices.shape[0], 3))
-
-            for v, c in zip(vertices, colors):
-                f.write(
-                    f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f} "
-                    f"{c[0]:.6f} {c[1]:.6f} {c[2]:.6f}\n"
-                )
-
-            # Keep faces until after all vertices are written.
-            face_groups.append(faces[:, :3] + vertex_offset + 1)
-            vertex_offset += int(vertices.shape[0])
-
-        for faces in face_groups:
-            for face in faces:
-                f.write(f"f {int(face[0])} {int(face[1])} {int(face[2])}\n")
-
 def export_scene_ply_frame(path: Path, meshes: list[tuple[Any, Any, Any]]) -> None:
     """
     Export one complete posed scene frame as a PLY file with vertex colours.
@@ -1057,11 +991,6 @@ def export_scene_ply_frame(path: Path, meshes: list[tuple[Any, Any, Any]]) -> No
         fixed_vertices[:, 0] = x
         fixed_vertices[:, 1] = -z
         fixed_vertices[:, 2] = y
-
-        # If this rotates the wrong way, replace the three lines above with:
-        # fixed_vertices[:, 0] = x
-        # fixed_vertices[:, 1] = z
-        # fixed_vertices[:, 2] = -y
 
         vertex_groups.append(fixed_vertices)
         color_groups.append(colors)
@@ -1278,10 +1207,6 @@ def export_avatar_scene_video(
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     scene_folder_name = f"{safe_scene_folder_name(scene)}_{timestamp}"
 
-    scene_obj_root = project_root / "exports" / "scene_obj"
-    scene_obj_dir = scene_obj_root / scene_folder_name
-    scene_obj_dir.mkdir(parents=True, exist_ok=True)
-
     scene_ply_root = project_root / "exports" / "scene_ply"
     scene_ply_dir = scene_ply_root / scene_folder_name
     scene_ply_dir.mkdir(parents=True, exist_ok=True)
@@ -1327,12 +1252,6 @@ def export_avatar_scene_video(
                         asset.mesh_faces,
                         avatar_vertex_colors[character.character_id],
                     )
-                )
-
-            if render_meshes:
-                export_scene_obj_frame(
-                    scene_obj_dir / f"{frame_index + 1}.obj",
-                    render_meshes,
                 )
 
                 export_scene_ply_frame(
